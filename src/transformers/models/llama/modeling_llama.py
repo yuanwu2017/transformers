@@ -66,6 +66,12 @@ logger = logging.get_logger(__name__)
 _CHECKPOINT_FOR_DOC = "meta-llama/Llama-2-7b-hf"
 _CONFIG_FOR_DOC = "LlamaConfig"
 
+def torch_save(tensor, name):
+    # Only save on the main process (rank 0) when using distributed training
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        torch.save(tensor, name)
+
+
 
 @use_kernel_forward_from_hub("RMSNorm")
 class LlamaRMSNorm(nn.Module):
@@ -294,7 +300,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-
+        self.index = layer_idx
         self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
 
         self.mlp = LlamaMLP(config)
@@ -311,6 +317,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        run_index: int = -1,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
@@ -328,12 +335,19 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
+        hidden_states = hidden_states.wait()
+        if run_index != -1:
+            torch_save(hidden_states, f"trans.{run_index}.Llama4TextDecoderLayer.{self.index}.attention.attention_states.pt")
+
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        hidden_states = hidden_states.wait()
+        torch_save(hidden_states, f"trans.{run_index}.Llama4TextDecoderLayer.{self.index}.mlp.pt")
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -486,7 +500,7 @@ class LlamaModel(LlamaPreTrainedModel):
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
-
+        self.run_index = 0
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -571,6 +585,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
+                run_index=self.run_index,
                 **flash_attn_kwargs,
             )
 
@@ -584,7 +599,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
-
+        self.run_index += 1
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values if use_cache else None,
@@ -804,7 +819,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-
+        print(f"11111111input_ids={input_ids}")
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,

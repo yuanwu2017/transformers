@@ -45,7 +45,7 @@ from torch.distributions import constraints
 from torch.nn import CrossEntropyLoss, Identity
 from torch.utils.checkpoint import checkpoint
 
-from transformers.utils import is_torchao_available
+from transformers.utils import is_torchao_available, is_torch_hpu_available
 
 
 if is_torchao_available():
@@ -1223,7 +1223,6 @@ def _get_torch_dtype(
                 f"`torch_dtype` can be one of: `torch.dtype`, `'auto'`, a string of a valid `torch.dtype` or a `dict` with valid `torch_dtype` "
                 f"for each sub-config in composite configs, but received {torch_dtype}"
             )
-
         dtype_orig = cls._set_default_torch_dtype(torch_dtype)
     else:
         # set fp32 as the default dtype for BC
@@ -4090,9 +4089,10 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, PushToHubMixin, PeftAdapterMi
             if not is_torch_greater_or_equal("2.5"):
                 raise EnvironmentError("tensor parallel is only supported for `torch>=2.5`.")
 
+            if is_torch_hpu_available():
+                device_type = "hpu"
             # Detect the accelerator on the machine. If no accelerator is available, it returns CPU.
             device_type = torch._C._get_accelerator().type
-
             if not torch.distributed.is_initialized():
                 try:
                     rank = int(os.environ["RANK"])
@@ -4109,6 +4109,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, PushToHubMixin, PeftAdapterMi
                         torch.distributed.init_process_group("ccl", rank=rank, world_size=world_size)
                         torch.xpu.set_device(int(os.environ["LOCAL_RANK"]))
                     elif device_type == "hpu":
+                        print("Initializing HPU process group")
                         torch.distributed.init_process_group("hccl", rank=rank, world_size=world_size)
                         torch.hpu.set_device(int(os.environ["LOCAL_RANK"]))
 
@@ -5003,7 +5004,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, PushToHubMixin, PeftAdapterMi
             # not part of the state_dict (persistent=False)
             for buffer in model.buffers():
                 if buffer.device != tp_device:
-                    buffer.data = buffer.to(tp_device)
+                    buffer=buffer.to(dtype)
+                    buffer.data = buffer.to(device=tp_device)
 
             # In this case, the top-most task module weights were not moved to device and parallelized as they
             # were not part of the loaded weights: do it now

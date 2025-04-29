@@ -322,6 +322,7 @@ class TextGenerationPipeline(Pipeline):
                 **tokenizer_kwargs,
             )
         else:
+            print(f"tokenizer_kwargs={tokenizer_kwargs}")
             inputs = self.tokenizer(prefix + prompt_text, return_tensors=self.framework, **tokenizer_kwargs)
 
         inputs["prompt_text"] = prompt_text

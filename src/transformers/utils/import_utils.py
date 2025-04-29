@@ -773,11 +773,13 @@ def is_torch_musa_available(check_device=False):
 @lru_cache
 def is_torch_hpu_available():
     "Checks if `torch.hpu` is available and potentially if a HPU is in the environment"
+    print(f"check the hpu avaliable")
     if (
         not _torch_available
         or importlib.util.find_spec("habana_frameworks") is None
         or importlib.util.find_spec("habana_frameworks.torch") is None
     ):
+        print(f"not _torch_available: {_torch_available}")
         return False
 
     torch_hpu_min_version = "1.5.0"
